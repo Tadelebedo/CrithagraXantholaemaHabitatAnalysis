@@ -1,7 +1,7 @@
 # Title: Compiled R Script for "Machine Learning Predictions of Climate Change Effects on Nearly Threatened Bird Species Habitat (Crithagra xantholaema) in Ethiopia for Conservation Strategies"
 
-# Author: [Tadele Bedo]
-# Date: [Insert Today's Date]
+# Author: Tadele Bedo
+
 
 # Description: This script compiles data preparation, preprocessing, model training, evaluation, and prediction steps for assessing the habitat suitability of Crithagra xantholaema under current and future climate conditions using Random Forest (RF), Support Vector Machine (SVM), XGBoost, and MaxEnt models, as per the methodology in the referenced manuscript.
 
