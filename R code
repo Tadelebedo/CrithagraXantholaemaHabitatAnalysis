@@ -1,0 +1,282 @@
+# Title: Compiled R Script for "Machine Learning Predictions of Climate Change Effects on Nearly Threatened Bird Species Habitat (Crithagra xantholaema) in Ethiopia for Conservation Strategies"
+
+# Author: [Tadele Bedo]
+# Date: [Insert Today's Date]
+
+# Description: This script compiles data preparation, preprocessing, model training, evaluation, and prediction steps for assessing the habitat suitability of Crithagra xantholaema under current and future climate conditions using Random Forest (RF), Support Vector Machine (SVM), XGBoost, and MaxEnt models, as per the methodology in the referenced manuscript.
+
+# Load Required Libraries
+library(terra)          # For raster processing
+library(sf)            # For shapefile handling
+library(raster)        # For raster operations
+library(dismo)         # For species distribution modeling (MaxEnt, pseudo-absence generation)
+library(dplyr)         # For data manipulation
+library(tidyr)         # For data tidying
+library(mapview)       # For interactive mapping
+library(maps)          # For basic mapping
+library(usdm)          # For multicollinearity analysis (VIF)
+library(caret)         # For machine learning model training and evaluation
+library(ggplot2)       # For plotting
+library(gridExtra)     # For arranging multiple plots
+library(pROC)          # For ROC curves and AUC
+library(rJava)         # Required for MaxEnt
+library(xgboost)       # For XGBoost modeling
+library(e1071)         # For SVM modeling
+library(vcd)           # For Kappa statistic
+
+# Set Working Directory
+setwd("C:/Onedrive/OneDrive - Haramaya University/Turaco/")
+
+# Section 1: Data Preparation
+# ----------------------------
+
+## 1.1 Load and Clip Raster Data to Ethiopia's Extent
+
+# Define file paths for current and future climate data
+current_raster_path <- "wc2.1_30s_bioc_current.tif"  # Placeholder for current climate data
+future_ssp245_2050_path <- "wc2.1_30s_bioc_HadGEM3-GC31-LL_ssp245_2041-2060.tif"
+future_ssp585_2050_path <- "wc2.1_30s_bioc_HadGEM3-GC31-LL_ssp585_2041-2060.tif"
+future_ssp245_2070_path <- "wc2.1_30s_bioc_HadGEM3-GC31-LL_ssp245_2061-2080.tif"
+future_ssp585_2070_path <- "wc2.1_30s_bioc_HadGEM3-GC31-LL_ssp585_2061-2080.tif"
+shapefile_path <- "Ethiopia/Ethiopia.shp"
+
+# Function to load and clip rasters
+clip_raster <- function(raster_path, shapefile, output_dir) {
+  multi_band_raster <- rast(raster_path)
+  ethiopia_shape <- vect(shapefile)
+  clipped_raster <- crop(multi_band_raster, ethiopia_shape)
+  clipped_raster <- mask(clipped_raster, ethiopia_shape)
+  band_names <- names(clipped_raster)
+  dir.create(output_dir, showWarnings = FALSE)
+  for (i in 1:nlyr(clipped_raster)) {
+    band <- clipped_raster[[i]]
+    band_name <- band_names[i]
+    writeRaster(band, filename = file.path(output_dir, paste0(band_name, ".tif")), overwrite = TRUE)
+  }
+  return(clipped_raster)
+}
+
+# Clip current and future rasters
+current_raster <- clip_raster(current_raster_path, shapefile_path, "Clipped_Bands/Current/")
+ssp245_2050_raster <- clip_raster(future_ssp245_2050_path, shapefile_path, "Clipped_Bands/SSP245_2050/")
+ssp585_2050_raster <- clip_raster(future_ssp585_2050_path, shapefile_path, "Clipped_Bands/SSP585_2050/")
+ssp245_2070_raster <- clip_raster(future_ssp245_2070_path, shapefile_path, "Clipped_Bands/SSP245_2070/")
+ssp585_2070_raster <- clip_raster(future_ssp585_2070_path, shapefile_path, "Clipped_Bands/SSP585_2070/")
+
+# Stack current rasters for modeling (assuming additional variables like elevation, NDVI, LULC are in the Factor directory)
+raster_files <- list.files("Factor/", pattern = "\\.tif$", full.names = TRUE)
+raster_stack <- stack(lapply(raster_files, raster))
+
+## 1.2 Load Occurrence Data and Generate Pseudo-Absence Points
+
+# Load occurrence data from GBIF
+occurrence_data <- read.csv("salvador.csv")
+coordinates(occurrence_data) <- ~ Longitude + Latitude
+proj4string(occurrence_data) <- CRS("+proj=longlat +datum=WGS84")
+
+# Plot occurrence points on the first raster layer
+plot(raster_stack[[1]], main = "Occurrence Points on Raster")
+points(occurrence_data, col = "red", pch = 16)
+
+# Generate pseudo-absence points (2:1 ratio as per manuscript: 188 presence -> 376 pseudo-absences)
+set.seed(1)
+pseudo_absences <- randomPoints(raster_stack, 376)
+abs_vals <- extract(raster_stack, pseudo_absences)
+pres_vals <- extract(raster_stack, occurrence_data)
+pb <- c(rep(1, nrow(pres_vals)), rep(0, nrow(abs_vals)))
+sdm_data <- data.frame(cbind(pb, rbind(pres_vals, abs_vals)))
+sdm_data <- na.omit(sdm_data)
+write.csv(sdm_data, "salva_abbs1.csv", row.names = FALSE)
+
+## 1.3 Handle Multicollinearity
+
+# Load the prepared dataset
+data <- read.csv("salva_abbs1.csv")
+
+# Select predictor variables as per manuscript (15 retained after correlation analysis)
+predictors <- data[, c("bio1", "bio3", "bio4", "bio7", "bio14", "bio15", "bio18", "bio19", "elevation", "slope", "aspect", "NDVI", "discrete_classification")]
+
+# Check for multicollinearity using VIF
+vif_result <- vif(predictors)
+print(vif_result)
+
+# Pearson correlation analysis (remove variables with |r| > 0.8)
+cor_matrix <- cor(predictors, method = "pearson")
+highly_correlated <- which(abs(cor_matrix) > 0.8 & lower.tri(cor_matrix), arr.ind = TRUE)
+if (length(highly_correlated) > 0) {
+  vars_to_remove <- unique(rownames(cor_matrix)[highly_correlated[, 1]])
+  predictors <- predictors[, !names(predictors) %in% vars_to_remove]
+}
+
+# Final dataset with predictors and response
+data <- cbind(pb = data$pb, predictors)
+
+# Section 2: Model Training and Evaluation
+# ----------------------------------------
+
+## 2.1 Split Data into Training and Testing Sets
+set.seed(1)
+train_index <- createDataPartition(data$pb, p = 0.7, list = FALSE)
+training_data <- data[train_index, ]
+testing_data <- data[-train_index, ]
+
+## 2.2 Random Forest (RF) Model
+
+# Train RF model with 500 trees as per manuscript
+rf_model <- train(pb ~ ., data = training_data, method = "rf", trControl = trainControl(method = "cv", number = 10), ntree = 500, tuneGrid = data.frame(mtry = 4))
+
+# Variable importance
+varImp(rf_model)
+plot(varImp(rf_model), main = "RF Variable Importance")
+
+# Predictions and evaluation
+rf_predictions <- predict(rf_model, newdata = testing_data, type = "raw")
+roc_rf <- roc(testing_data$pb, rf_predictions)
+auc_rf <- auc(roc_rf)
+plot(roc_rf, main = "ROC Curve for RF Model")
+text(0.5, 0.5, paste("AUC =", round(auc_rf, 3)))
+conf_matrix_rf <- confusionMatrix(as.factor(ifelse(rf_predictions > 0.5, 1, 0)), as.factor(testing_data$pb))
+print(conf_matrix_rf)
+
+## 2.3 Support Vector Machine (SVM) Model
+
+# Train SVM model with RBF kernel
+svm_model <- train(pb ~ ., data = training_data, method = "svmRadial", trControl = trainControl(method = "cv", number = 10))
+
+# Variable importance
+varImp(svm_model)
+plot(varImp(svm_model), main = "SVM Variable Importance")
+
+# Predictions and evaluation
+svm_predictions <- predict(svm_model, newdata = testing_data)
+roc_svm <- roc(testing_data$pb, svm_predictions)
+auc_svm <- auc(roc_svm)
+plot(roc_svm, main = "ROC Curve for SVM Model")
+text(0.5, 0.5, paste("AUC =", round(auc_svm, 3)))
+conf_matrix_svm <- confusionMatrix(as.factor(ifelse(svm_predictions > 0.5, 1, 0)), as.factor(testing_data$pb))
+print(conf_matrix_svm)
+
+## 2.4 XGBoost Model
+
+# Prepare data for XGBoost
+dtrain <- xgb.DMatrix(data = as.matrix(training_data[, -1]), label = training_data$pb)
+dtest <- xgb.DMatrix(data = as.matrix(testing_data[, -1]), label = testing_data$pb)
+
+# Set parameters
+params <- list(booster = "gbtree", objective = "binary:logistic", eta = 0.3, gamma = 0, max_depth = 6)
+
+# Train model
+xgb_model <- xgb.train(params = params, data = dtrain, nrounds = 100)
+
+# Variable importance
+xgb.plot.importance(xgb.importance(model = xgb_model))
+
+# Predictions and evaluation
+xgb_predictions <- predict(xgb_model, dtest)
+roc_xgb <- roc(testing_data$pb, xgb_predictions)
+auc_xgb <- auc(roc_xgb)
+plot(roc_xgb, main = "ROC Curve for XGBoost Model")
+text(0.5, 0.5, paste("AUC =", round(auc_xgb, 3)))
+conf_matrix_xgb <- confusionMatrix(as.factor(ifelse(xgb_predictions > 0.5, 1, 0)), as.factor(testing_data$pb))
+print(conf_matrix_xgb)
+
+## 2.5 MaxEnt Model
+
+# Train MaxEnt model
+maxent_model <- maxent(x = training_data[, -1], p = training_data$pb)
+
+# Variable importance
+plot(maxent_model)
+
+# Predictions and evaluation
+maxent_predictions <- predict(maxent_model, testing_data[, -1])
+roc_maxent <- roc(testing_data$pb, maxent_predictions)
+auc_maxent <- auc(roc_maxent)
+plot(roc_maxent, main = "ROC Curve for MaxEnt Model")
+text(0.5, 0.5, paste("AUC =", round(auc_maxent, 3)))
+conf_matrix_maxent <- confusionMatrix(as.factor(ifelse(maxent_predictions > 0.5, 1, 0)), as.factor(testing_data$pb))
+print(conf_matrix_maxent)
+
+# Section 3: Predictive Mapping
+# -----------------------------
+
+## 3.1 Current Climate Predictions
+
+# Predict with each model
+rf_pred_current <- predict(raster_stack, rf_model)
+svm_pred_current <- predict(raster_stack, svm_model)
+xgb_pred_current <- predict(raster_stack, xgb_model)
+maxent_pred_current <- predict(raster_stack, maxent_model)
+
+# Plot and save predictions
+plot(rf_pred_current, main = "RF Current Suitability Map")
+writeRaster(rf_pred_current, "Predicted/RF_current.tif", overwrite = TRUE)
+plot(svm_pred_current, main = "SVM Current Suitability Map")
+writeRaster(svm_pred_current, "Predicted/SVM_current.tif", overwrite = TRUE)
+plot(xgb_pred_current, main = "XGBoost Current Suitability Map")
+writeRaster(xgb_pred_current, "Predicted/XGBoost_current.tif", overwrite = TRUE)
+plot(maxent_pred_current, main = "MaxEnt Current Suitability Map")
+writeRaster(maxent_pred_current, "Predicted/MaxEnt_current.tif", overwrite = TRUE)
+
+## 3.2 Future Climate Predictions
+
+# Function to stack future rasters (assuming similar preprocessing)
+stack_future_rasters <- function(directory) {
+  files <- list.files(directory, pattern = "\\.tif$", full.names = TRUE)
+  return(stack(lapply(files, raster)))
+}
+
+# Stack future rasters
+ssp245_2050_stack <- stack_future_rasters("Clipped_Bands/SSP245_2050/")
+ssp585_2050_stack <- stack_future_rasters("Clipped_Bands/SSP585_2050/")
+ssp245_2070_stack <- stack_future_rasters("Clipped_Bands/SSP245_2070/")
+ssp585_2070_stack <- stack_future_rasters("Clipped_Bands/SSP585_2070/")
+
+# Future predictions
+rf_pred_ssp245_2050 <- predict(ssp245_2050_stack, rf_model)
+rf_pred_ssp585_2050 <- predict(ssp585_2050_stack, rf_model)
+rf_pred_ssp245_2070 <- predict(ssp245_2070_stack, rf_model)
+rf_pred_ssp585_2070 <- predict(ssp585_2070_stack, rf_model)
+
+svm_pred_ssp245_2050 <- predict(ssp245_2050_stack, svm_model)
+svm_pred_ssp585_2050 <- predict(ssp585_2050_stack, svm_model)
+svm_pred_ssp245_2070 <- predict(ssp245_2070_stack, svm_model)
+svm_pred_ssp585_2070 <- predict(ssp585_2070_stack, svm_model)
+
+xgb_pred_ssp245_2050 <- predict(ssp245_2050_stack, xgb_model)
+xgb_pred_ssp585_2050 <- predict(ssp585_2050_stack, xgb_model)
+xgb_pred_ssp245_2070 <- predict(ssp245_2070_stack, xgb_model)
+xgb_pred_ssp585_2070 <- predict(ssp585_2070_stack, xgb_model)
+
+maxent_pred_ssp245_2050 <- predict(ssp245_2050_stack, maxent_model)
+maxent_pred_ssp585_2050 <- predict(ssp585_2050_stack, maxent_model)
+maxent_pred_ssp245_2070 <- predict(ssp245_2070_stack, maxent_model)
+maxent_pred_ssp585_2070 <- predict(ssp585_2070_stack, maxent_model)
+
+# Plot and save future predictions (example for RF)
+plot(rf_pred_ssp245_2050, main = "RF SSP245 2050 Suitability Map")
+writeRaster(rf_pred_ssp245_2050, "Predicted/RF_ssp245_2050.tif", overwrite = TRUE)
+plot(rf_pred_ssp585_2070, main = "RF SSP585 2070 Suitability Map")
+writeRaster(rf_pred_ssp585_2070, "Predicted/RF_ssp585_2070.tif", overwrite = TRUE)
+
+# Repeat plotting and saving for other models and scenarios as needed
+
+# Section 4: Habitat Loss and Gain Analysis
+# -----------------------------------------
+
+# Example: Calculate habitat loss/gain (simplified)
+habitat_change <- function(current, future, threshold = 0.5) {
+  current_binary <- current > threshold
+  future_binary <- future > threshold
+  loss <- current_binary - future_binary
+  gain <- future_binary - current_binary
+  return(list(loss = loss, gain = gain))
+}
+
+# Apply to RF predictions (example)
+rf_change_ssp585_2070 <- habitat_change(rf_pred_current, rf_pred_ssp585_2070)
+plot(rf_change_ssp585_2070$loss, main = "RF Habitat Loss SSP585 2070")
+plot(rf_change_ssp585_2070$gain, main = "RF Habitat Gain SSP585 2070")
+
+
+# End of Script
