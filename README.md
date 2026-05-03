@@ -1,4 +1,4 @@
-# Climate-Change Effects on *Crithagra xantholaema* Habitat in Ethiopia
+# Climate-Change Effects on *Crithagra xantholaema* Habitat in Ethiopia 
 
 [![DOI](https://img.shields.io/badge/DOI-10.1038%2Fs41598--025--20952--4-blue)](https://doi.org/10.1038/s41598-025-20952-4)
 [![License: CC0-1.0](https://img.shields.io/badge/License-CC0_1.0-lightgrey.svg)](http://creativecommons.org/publicdomain/zero/1.0/)
