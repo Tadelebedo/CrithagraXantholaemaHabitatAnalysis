@@ -1,0 +1,41 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite both the software and the article below."
+title: "CrithagraXantholaemaHabitatAnalysis: Machine-learning species-distribution modelling for Crithagra xantholaema in Ethiopia"
+abstract: "R code and documentation for ensemble machine-learning species-distribution modelling of climate-change effects on the nearly threatened bird species Crithagra xantholaema in Ethiopia."
+authors:
+  - family-names: "Gelete"
+    given-names: "Tadele Bedo"
+    affiliation: "School of Geography and Environmental Studies, Haramaya University, Ethiopia"
+    email: "tadele.bedo@haramaya.edu.et"
+    orcid: "https://orcid.org/YOUR_ORCID"
+type: software
+license: CC0-1.0
+repository-code: "https://github.com/Tadelebedo/CrithagraXantholaemaHabitatAnalysis"
+keywords:
+  - species-distribution-modelling
+  - machine-learning
+  - climate-change
+  - conservation
+  - ethiopia
+  - geoai
+  - remote-sensing
+  - random-forest
+  - maxent
+preferred-citation:
+  type: article
+  title: "Machine-learning predictions of climate-change effects on the nearly threatened bird species Crithagra xantholaema habitat in Ethiopia for conservation strategies"
+  authors:
+    - family-names: "Gelete"
+      given-names: "Tadele Bedo"
+    - family-names: "Tulu"
+      given-names: "Dereje"
+    - family-names: "Yasin"
+      given-names: "Kediro Hussien"
+    - family-names: "Kebede"
+      given-names: "Erana"
+  journal: "Scientific Reports"
+  volume: 15
+  start: 36972
+  year: 2025
+  doi: "10.1038/s41598-025-20952-4"
+  url: "https://doi.org/10.1038/s41598-025-20952-4"
